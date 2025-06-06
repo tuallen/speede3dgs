@@ -17,16 +17,18 @@ from os import makedirs
 from gaussian_renderer import render
 import torchvision
 from utils.general_utils import safe_state
-from utils.pose_utils import pose_spherical, render_wander_path
+from utils.pose_utils import pose_spherical
 from argparse import ArgumentParser
-from arguments import ModelParams, PipelineParams, get_combined_args
+from arguments import ModelParams, PipelineParams, OptimizationParams, get_combined_args
 from gaussian_renderer import GaussianModel
 import imageio
 import numpy as np
 import time
+from utils.rigid_utils import step_group_flow
 
 
-def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, deform):
+def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background, deform, gflow_model=None):
+    root_path = os.path.join(model_path, name, "ours_{}".format(iteration))
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "depth")
@@ -35,7 +37,10 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
     makedirs(gts_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
 
+    to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
+
     t_list = []
+    renderings = []
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         if load2gpu_on_the_fly:
@@ -43,16 +48,23 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
         fid = view.fid
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
 
         gt = view.original_image[0:3, :, :]
+        renderings.append(to8b(torch.cat([gt, rendering], dim=2).cpu().numpy()))
+
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(idx) + ".png"))
+
+    # renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
+    # imageio.mimwrite(os.path.join(root_path, 'video.mp4'), renderings, fps=30, quality=8)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         fid = view.fid
@@ -62,7 +74,10 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
         torch.cuda.synchronize()
         t_start = time.time()
 
-        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
 
         torch.cuda.synchronize()
@@ -72,16 +87,21 @@ def render_set(model_path, load2gpu_on_the_fly, is_6dof, name, iteration, views,
     t = np.array(t_list[5:])
     fps = 1.0 / t.mean()
     print(f'Test FPS: \033[1;35m{fps:.5f}\033[0m, Num. of GS: {xyz.shape[0]}')
+    with open(os.path.join(model_path, f'fps_{iteration}.txt'), 'w') as f: 
+        f.write(str(fps))
+    with open(os.path.join(model_path, f'num_gaussians_{iteration}.txt'), 'w') as f: 
+        f.write(str(xyz.shape[0]))
 
 
-def interpolate_time(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, deform):
-    render_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "renders")
-    depth_path = os.path.join(model_path, name, "interpolate_{}".format(iteration), "depth")
+def interpolate_time(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background, deform, gflow_model=None):
+    render_path = os.path.join(model_path, name, "interpolate_time_{}".format(iteration), "renders")
+    depth_path = os.path.join(model_path, name, "interpolate_time_{}".format(iteration), "depth")
 
     makedirs(render_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
 
     to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
+    cmap = torch.randint(64, 256, [1000, 3]).to(gaussians._xyz.device)
 
     frame = 150
     idx = torch.randint(0, len(views), (1,)).item()
@@ -91,28 +111,43 @@ def interpolate_time(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, 
         fid = torch.Tensor([t / (frame - 1)]).cuda()
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
         renderings.append(to8b(rendering.cpu().numpy()))
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(t) + ".png"))
-        torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(t) + ".png"))
+        if gflow_model is not None:
+            ### visualize groups
+            group_colors = cmap[gflow_model.labels, None, :] / 128.0 - 1
+            group_colors = torch.cat((group_colors, torch.zeros_like(gaussians._features_rest)), dim=1)
+            render_pkg_re = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof, group_colors=group_colors)
+            gflow_show = to8b(render_pkg_re['render'][:3,:,:].cpu().numpy())
+            renderings[-1] = np.concatenate([renderings[-1], gflow_show], axis=-1)    # concate with RGB rendering
+
+        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(t) + ".png"))
+        # torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(t) + ".png"))
 
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
 
-def interpolate_view(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, timer):
+def interpolate_view(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background, timer, gflow_model=None):
+    root_path = os.path.join(model_path, name, "interpolate_view_{}".format(iteration))
     render_path = os.path.join(model_path, name, "interpolate_view_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_view_{}".format(iteration), "depth")
     # acc_path = os.path.join(model_path, name, "interpolate_view_{}".format(iteration), "acc")
 
+    makedirs(root_path, exist_ok=True)
     makedirs(render_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
     # makedirs(acc_path, exist_ok=True)
+
+    cmap = torch.randint(64, 256, [1000, 3]).to(gflow_model.labels.device)
 
     frame = 150
     to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
@@ -120,9 +155,8 @@ def interpolate_view(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, 
     idx = torch.randint(0, len(views), (1,)).item()
     view = views[idx]  # Choose a specific time for rendering
 
-    render_poses = torch.stack(render_wander_path(view), 0)
-    # render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180, 180, frame + 1)[:-1]],
-    #                            0)
+    render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180, 180, frame + 1)[:-1]],
+                               0)
 
     renderings = []
     for i, pose in enumerate(tqdm(render_poses, desc="Rendering progress")):
@@ -137,23 +171,32 @@ def interpolate_view(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, 
 
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
         renderings.append(to8b(rendering.cpu().numpy()))
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
-        # acc = results["acc"]
 
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(i) + ".png"))
         torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(i) + ".png"))
-        # torchvision.utils.save_image(acc, os.path.join(acc_path, '{0:05d}'.format(i) + ".png"))
+
+        if gflow_model is not None:
+            ### visualize groups
+            group_colors = cmap[gflow_model.labels, None, :] / 128.0 - 1
+            group_colors = torch.cat((group_colors, torch.zeros_like(gaussians._features_rest)), dim=1)
+            render_pkg_re = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof, group_colors=group_colors)
+            gflow_show = to8b(render_pkg_re['render'][:3,:,:].cpu().numpy())
+            renderings[-1] = np.concatenate([renderings[-1], gflow_show], axis=-1)    # concate with RGB rendering
 
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
 
-def interpolate_all(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, deform):
+def interpolate_all(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background, deform, gflow_model=None):
     render_path = os.path.join(model_path, name, "interpolate_all_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_all_{}".format(iteration), "depth")
 
@@ -164,6 +207,7 @@ def interpolate_all(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, v
     render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180, 180, frame + 1)[:-1]],
                                0)
     to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
+    cmap = torch.randint(64, 256, [1000, 3]).to(gaussians._xyz.device)
 
     idx = torch.randint(0, len(views), (1,)).item()
     view = views[idx]  # Choose a specific time for rendering
@@ -181,29 +225,40 @@ def interpolate_all(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, v
 
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
         renderings.append(to8b(rendering.cpu().numpy()))
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(i) + ".png"))
-        torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(i) + ".png"))
+        # torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(i) + ".png"))
+        # torchvision.utils.save_image(depth, os.path.join(depth_path, '{0:05d}'.format(i) + ".png"))
+
+        if gflow_model is not None:
+            ### visualize groups
+            group_colors = cmap[gflow_model.labels, None, :] / 128.0 - 1
+            group_colors = torch.cat((group_colors, torch.zeros_like(gaussians._features_rest)), dim=1)
+            render_pkg_re = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof, group_colors=group_colors)
+            gflow_show = to8b(render_pkg_re['render'][:3,:,:].cpu().numpy())
+            renderings[-1] = np.concatenate([renderings[-1], gflow_show], axis=-1)    # concate with RGB rendering
 
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=30, quality=8)
 
 
-def interpolate_poses(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background, timer):
+def interpolate_poses(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background, timer, gflow_model=None):
     render_path = os.path.join(model_path, name, "interpolate_pose_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_pose_{}".format(iteration), "depth")
 
     makedirs(render_path, exist_ok=True)
     makedirs(depth_path, exist_ok=True)
-    # makedirs(acc_path, exist_ok=True)
     frame = 520
     to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
+    cmap = torch.randint(64, 256, [1000, 3]).to(gaussians._xyz.device)
 
     idx = torch.randint(0, len(views), (1,)).item()
     view_begin = views[0]  # Choose a specific time for rendering
@@ -228,7 +283,10 @@ def interpolate_poses(model_path, load2gpt_on_the_fly, is_6dof, name, iteration,
 
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
 
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
@@ -236,12 +294,20 @@ def interpolate_poses(model_path, load2gpt_on_the_fly, is_6dof, name, iteration,
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
 
+        if gflow_model is not None:
+            ### visualize groups
+            group_colors = cmap[gflow_model.labels, None, :] / 128.0 - 1
+            group_colors = torch.cat((group_colors, torch.zeros_like(gaussians._features_rest)), dim=1)
+            render_pkg_re = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof, group_colors=group_colors)
+            gflow_show = to8b(render_pkg_re['render'][:3,:,:].cpu().numpy())
+            renderings[-1] = np.concatenate([renderings[-1], gflow_show], axis=-1)    # concate with RGB rendering
+
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=60, quality=8)
 
 
-def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, background,
-                              timer):
+def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, iteration, views, gaussians, pipeline, opt, background,
+                              timer, gflow_model=None):
     render_path = os.path.join(model_path, name, "interpolate_hyper_view_{}".format(iteration), "renders")
     depth_path = os.path.join(model_path, name, "interpolate_hyper_view_{}".format(iteration), "depth")
     # acc_path = os.path.join(model_path, name, "interpolate_all_{}".format(iteration), "acc")
@@ -251,6 +317,7 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, it
 
     frame = 1000
     to8b = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
+    cmap = torch.randint(64, 256, [1000, 3]).to(gaussians._xyz.device)
 
     R = []
     T = []
@@ -284,7 +351,10 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, it
 
         xyz = gaussians.get_xyz
         time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-        d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        if gflow_model is None:
+            d_xyz, d_rotation, d_scaling = timer.step(xyz.detach(), time_input)
+        else:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=True)
 
         results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof)
         rendering = results["render"]
@@ -292,11 +362,19 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, it
         depth = results["depth"]
         depth = depth / (depth.max() + 1e-5)
 
+        if gflow_model is not None:
+            ### visualize groups
+            group_colors = cmap[gflow_model.labels, None, :] / 128.0 - 1
+            group_colors = torch.cat((group_colors, torch.zeros_like(gaussians._features_rest)), dim=1)
+            render_pkg_re = render(view, gaussians, pipeline, background, d_xyz, d_rotation, d_scaling, is_6dof, group_colors=group_colors)
+            gflow_show = to8b(render_pkg_re['render'][:3,:,:].cpu().numpy())
+            renderings[-1] = np.concatenate([renderings[-1], gflow_show], axis=-1)    # concate with RGB rendering
+
     renderings = np.stack(renderings, 0).transpose(0, 2, 3, 1)
     imageio.mimwrite(os.path.join(render_path, 'video.mp4'), renderings, fps=60, quality=8)
 
 
-def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
+def render_sets(dataset: ModelParams, opt: OptimizationParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
                 mode: str):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree)
@@ -306,6 +384,21 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
 
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+        gflow_model = None
+        if opt.gflow_flag:
+            if iteration == -1:
+                from utils.system_utils import searchForMaxIteration
+                iteration = searchForMaxIteration(os.path.join(dataset.model_path, "gflow"))
+            if os.path.exists(os.path.join(dataset.model_path, "gflow/iteration_{}/deform.pth".format(iteration))):
+                from utils.rigid_utils import GroupFlowModel, GroupFlowModel_v2
+                if opt.gflow_opt == 1:
+                    gflow_model = GroupFlowModel()
+                elif opt.gflow_opt == 2:
+                    gflow_model = GroupFlowModel_v2()
+                    
+                gflow_model.load_weights(dataset.model_path, iteration=iteration)
+                gflow_model.precompute_interp(x=gaussians.get_xyz)     # for fast inference
 
         if mode == "render":
             render_func = render_set
@@ -322,13 +415,13 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
 
         if not skip_train:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, dataset.is_6dof, "train", scene.loaded_iter,
-                        scene.getTrainCameras(), gaussians, pipeline,
-                        background, deform)
+                        scene.getTrainCameras(), gaussians, pipeline, opt, 
+                        background, deform, gflow_model=gflow_model)
 
         if not skip_test:
             render_func(dataset.model_path, dataset.load2gpu_on_the_fly, dataset.is_6dof, "test", scene.loaded_iter,
-                        scene.getTestCameras(), gaussians, pipeline,
-                        background, deform)
+                        scene.getTestCameras(), gaussians, pipeline, opt,
+                        background, deform, gflow_model=gflow_model)
 
 
 if __name__ == "__main__":
@@ -336,6 +429,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Testing script parameters")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
+    op = OptimizationParams(parser)
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
@@ -347,4 +441,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode)
+    render_sets(model.extract(args), op.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.mode)

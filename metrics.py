@@ -11,6 +11,7 @@
 
 from pathlib import Path
 import os
+import datetime
 from PIL import Image
 import torch
 import torchvision.transforms.functional as tf
@@ -85,6 +86,24 @@ def evaluate(model_paths):
                 full_dict[scene_dir][method].update({"SSIM": torch.tensor(ssims).mean().item(),
                                                      "PSNR": torch.tensor(psnrs).mean().item(),
                                                      "LPIPS": torch.tensor(lpipss).mean().item()})
+                iteration = method.split('_')[-1]
+                fps_path = scene_dir + f'/fps_{iteration}.txt'
+                with open(fps_path, "r") as f:
+                    full_dict[scene_dir][method].update({"FPS": float(f.read().strip())})
+                num_gaussians_path = scene_dir + f'/num_gaussians_{iteration}.txt'
+                with open(num_gaussians_path, "r") as f:
+                    full_dict[scene_dir][method].update({"Gaussians": int(f.read().strip())})
+                deform_path = scene_dir + f'/deform/iteration_{iteration}/deform.pth'
+                full_dict[scene_dir][method].update({"Deform": os.path.getsize(deform_path) / (1024 * 1024)})
+                gflow_path = scene_dir + f'/gflow/iteration_{iteration}/deform.pth'
+                if os.path.exists(gflow_path):
+                    full_dict[scene_dir][method].update({"GroupFlow": os.path.getsize(gflow_path) / (1024 * 1024)})
+                # Train time
+                time1 = datetime.datetime.fromtimestamp(os.path.getctime(scene_dir + "/cfg_args"))
+                time2 = datetime.datetime.fromtimestamp(os.path.getctime(scene_dir + f"/point_cloud/iteration_{iteration}/point_cloud.ply"))
+                diff_minutes = abs((time2 - time1).total_seconds()) / 60
+                full_dict[scene_dir][method].update({"Training": diff_minutes})
+
                 per_view_dict[scene_dir][method].update(
                     {"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
                      "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
