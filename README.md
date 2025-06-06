@@ -98,7 +98,7 @@ We provide several modes for rendering:
 - `view`: view synthesis tasks for D-NeRF dataset
 - `original`: time and view synthesis tasks for real-world dataset
 
-## BibTex
+# BibTex
 
 ```
 @Article{TuYing2025speede3dgs,
@@ -108,3 +108,7 @@ We provide several modes for rendering:
     year={2025}
 }
 ```
+
+# Funding and Acknowledgements
+
+This work was made possible by the IARPA WRIVA Program, the ONR MURI program, and DAPRA TIAMAT. Commercial support was provided by Capital One Bank, the Amazon Research Award program, and Open Philanthropy. Further support was provided by the National Science Foundation (IIS-2212182), and by the NSF TRAILS Institute (2229885).
