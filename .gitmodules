@@ -4,4 +4,3 @@
 [submodule "submodules/depth-diff-gaussian-rasterization"]
 	path = submodules/depth-diff-gaussian-rasterization
 	url = https://github.com/tuallen/diff-gaussian-rasterization-extensions.git
-	branch = main
