@@ -222,6 +222,10 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        print("Number of points from existing .ply file : ", self.get_xyz.shape[0])
+
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -377,6 +381,18 @@ class GaussianModel:
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
+
+    def prune_gaussians(self, percent, import_score: list): # NEW
+        num_before = self.get_xyz.shape[0]
+        sorted_tensor, _ = torch.sort(import_score, dim=0)
+        index_nth_percentile = int(percent * (sorted_tensor.shape[0] - 1))
+        value_nth_percentile = sorted_tensor[index_nth_percentile]
+        prune_mask = (import_score <= value_nth_percentile).squeeze()
+        self.prune_points(prune_mask)
+        num_after = self.get_xyz.shape[0]
+        num_removed = num_before - num_after
+        print(f"\n[Prune] Gaussians before: {num_before}, after: {num_after}, removed: {num_removed}")
+        return prune_mask
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1,

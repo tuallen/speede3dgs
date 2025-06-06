@@ -10,6 +10,7 @@
 #
 
 import os
+import numpy as np
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim, kl_divergence
@@ -22,6 +23,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.rigid_utils import do_group_flow, step_group_flow
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -29,6 +31,55 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+
+def score_func(scores, view, gaussians, opt, pipe, background, deform, time_interval, 
+               gflow_model=None, is_6dof=False, use_apt_noise=True, smooth_term=0):
+
+    img_scores = torch.zeros_like(scores)
+    img_scores.requires_grad = True
+
+    with torch.no_grad():
+        fid = view.fid
+        if gflow_model is not None:
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, gaussians)
+        else:
+            N = gaussians.get_xyz.shape[0]
+            time_input = fid.unsqueeze(0).expand(N, -1)
+            apt_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term if use_apt_noise else 0
+            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + apt_noise)
+
+    image = render(view, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, is_6dof, scores=img_scores)['render']
+
+    # Backward computes and stores grad squared values
+    # in img_scores's grad
+    image.sum().backward()
+
+    scores += img_scores.grad
+
+
+def prune(scene, gaussians, dataset, opt, pipe, background, deform, time_interval, prune_ratio, 
+          gflow_model=None, smooth_term=0, iteration=0):
+    use_apt_noise = not dataset.is_blender and opt.use_apt_noise
+    with torch.enable_grad():
+        pbar = tqdm(
+            total=len(scene.getTrainCameras()),
+            desc='Computing Pruning Scores')
+        scores = torch.zeros_like(gaussians.get_opacity)
+        scores_prev = torch.zeros_like(scores)
+        view_counts = torch.zeros_like(scores, dtype=torch.int32)
+        for view in scene.getTrainCameras():
+            score_func(scores, view, gaussians, opt, pipe, background, 
+                       deform, time_interval, gflow_model=gflow_model, is_6dof=dataset.is_6dof, 
+                       use_apt_noise=use_apt_noise, smooth_term=smooth_term)
+            view_mask = (scores > scores_prev).squeeze()
+            view_counts[view_mask] += 1
+            scores_prev = scores.clone()
+            pbar.update(1)
+        pbar.close()
+
+    prune_mask = gaussians.prune_gaussians(prune_ratio, scores * view_counts ** opt.vc_exp)
+    if gflow_model is not None:
+        gflow_model.labels = gflow_model.labels[~prune_mask]
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations):
@@ -45,6 +96,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
 
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
+
+    ## Initial claim of gflow model
+    gflow_model = None
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
@@ -74,6 +128,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
+        if iteration == opt.gflow_iteration and opt.gflow_flag == True:
+            print("Grouping Gaussians")
+            gflow_model = do_group_flow(gaussians, opt, dataset, scene, deform)
 
         # Pick a random Camera
         if not viewpoint_stack:
@@ -89,6 +146,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
 
         if iteration < opt.warm_up:
             d_xyz, d_rotation, d_scaling = 0.0, 0.0, 0.0
+        elif gflow_model is not None:
+
+            if opt.gflow_noise_flag == True:
+                ast_noise = 0 if dataset.is_blender else torch.randn(1, device='cuda') * time_interval * smooth_term(iteration)
+            else:
+                ast_noise = 0
+            
+            d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid+ast_noise, gaussians)
         else:
             N = gaussians.get_xyz.shape[0]
             time_input = fid.unsqueeze(0).expand(N, -1)
@@ -100,7 +165,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
         render_pkg_re = render(viewpoint_cam, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, dataset.is_6dof)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
-        # depth = render_pkg_re["depth"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -128,8 +192,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
 
             # Log and save
             cur_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end),
-                                       testing_iterations, scene, render, (pipe, background), deform,
-                                       dataset.load2gpu_on_the_fly, dataset.is_6dof)
+                                       testing_iterations, scene, opt, render, (pipe, background), deform,
+                                       dataset.load2gpu_on_the_fly, dataset.is_6dof, gflow_model=gflow_model)
             if iteration in testing_iterations:
                 if cur_psnr.item() > best_psnr:
                     best_psnr = cur_psnr.item()
@@ -139,6 +203,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 deform.save_weights(args.model_path, iteration)
+                if gflow_model is not None and opt.gflow_flag:
+                    gflow_model.save_weights(args.model_path, iteration)
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -148,6 +214,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+
+                # --- Soft Pruning ---
+                if (iteration >= opt.prune_from_iter) and \
+                    (iteration < opt.prune_until_iter) and \
+                    (iteration % opt.prune_interval == 0):
+
+                    prune(scene, gaussians, dataset, opt, pipe, background, 
+                          deform, time_interval, opt.densify_prune_ratio, 
+                          gflow_model=gflow_model, smooth_term=smooth_term(iteration), iteration=iteration)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):
@@ -162,6 +237,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations):
                 deform.optimizer.zero_grad()
                 deform.update_learning_rate(iteration)
 
+                if gflow_model is not None and opt.gflow_flag:
+                    gflow_model.optimizer.step()
+                    gflow_model.optimizer.zero_grad()
+                    if gflow_model.annealing_lr_flag:
+                        gflow_model.update_learning_rate(iteration)
+
+            # --- Hard Pruning ---
+            if (iteration >= opt.densify_until_iter) and \
+                (iteration >= opt.prune_from_iter) and \
+                (iteration < opt.prune_until_iter) and \
+                (iteration % opt.prune_interval == 0):
+
+                prune(scene, gaussians, dataset, opt, pipe, background, 
+                      deform, time_interval, opt.after_densify_prune_ratio, 
+                      gflow_model=gflow_model, smooth_term=smooth_term(iteration), iteration=iteration)        
+                        
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
 
 
@@ -188,8 +279,8 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: Scene, renderFunc,
-                    renderArgs, deform, load2gpu_on_the_fly, is_6dof=False):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: Scene, opt: OptimizationParams, renderFunc,
+                    renderArgs, deform, load2gpu_on_the_fly, is_6dof=False, gflow_model=None):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -214,7 +305,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     fid = viewpoint.fid
                     xyz = scene.gaussians.get_xyz
                     time_input = fid.unsqueeze(0).expand(xyz.shape[0], -1)
-                    d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
+                    
+                    if gflow_model is not None:
+                        d_xyz, d_rotation, d_scaling = step_group_flow(gflow_model, opt, fid, scene.gaussians)
+                    else:
+                        d_xyz, d_rotation, d_scaling = deform.step(xyz.detach(), time_input)
                     image = torch.clamp(
                         renderFunc(viewpoint, scene.gaussians, *renderArgs, d_xyz, d_rotation, d_scaling, is_6dof)["render"],
                         0.0, 1.0)
@@ -235,7 +330,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 psnr_test = psnr(images, gts).mean()
                 if config['name'] == 'test' or len(validation_configs[0]['cameras']) == 0:
                     test_psnr = psnr_test
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} N_pts {}".format(iteration, config['name'], l1_test, psnr_test, scene.gaussians.get_xyz.shape[0]))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
@@ -270,7 +365,6 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations)
 

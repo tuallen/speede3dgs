@@ -60,6 +60,7 @@ class ModelParams(ParamGroup):
         self.load2gpu_on_the_fly = False
         self.is_blender = False
         self.is_6dof = False
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -78,7 +79,7 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 40_000
+        self.iterations = 30_000
         self.warm_up = 3_000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
@@ -96,6 +97,31 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0007
+
+        # pruning parameters
+        self.prune_from_iter = 6000
+        self.prune_until_iter = 30_000
+        self.prune_interval = 3000
+        self.densify_prune_ratio = 0.80
+        self.after_densify_prune_ratio = 0.30
+        self.use_apt_noise = False
+        self.vc_exp = 0.0
+
+        # gflow parameters
+        self.gflow_xyz_lr = 1e-5
+        self.gflow_rotation_lr = 1e-7
+        self.gflow_translation_lr = 1e-7
+        self.gflow_radius_lr = 1e-7
+        self.gflow_flag = False     ## If use grouping
+        self.gflow_iteration = 15000
+        self.gflow_num = 500     # groupflow number
+        self.gflow_opt = 2      # groupflow options ["1", "2"]
+        self.gflow_local_rot = False
+        self.LBS_flag = False
+        self.gflow_annealing_lr_flag = False
+        self.gflow_noise_flag = True
+        self.gflow_tnum_max = 200
+
         super().__init__(parser, "Optimization Parameters")
 
 

@@ -40,7 +40,8 @@ class DeformModel:
         else:
             loaded_iter = iteration
         weights_path = os.path.join(model_path, "deform/iteration_{}/deform.pth".format(loaded_iter))
-        self.deform.load_state_dict(torch.load(weights_path))
+        # self.deform.load_state_dict(torch.load(weights_path), weights_only=False)
+        self.deform.load_state_dict(torch.load(weights_path, weights_only=False))
 
     def update_learning_rate(self, iteration):
         for param_group in self.optimizer.param_groups:

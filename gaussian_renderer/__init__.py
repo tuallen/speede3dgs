@@ -30,7 +30,7 @@ def quaternion_multiply(q1, q2):
 
 
 def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_xyz, d_rotation, d_scaling, is_6dof=False,
-           scaling_modifier=1.0, override_color=None):
+           scaling_modifier=1.0, override_color=None, scores = None, group_colors=None):
     """
     Render the scene.
 
@@ -67,15 +67,19 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    if is_6dof:
-        if torch.is_tensor(d_xyz) is False:
-            means3D = pc.get_xyz
-        else:
+    if torch.is_tensor(d_xyz) is False:
+        means3D = pc.get_xyz
+    else:
+        if is_6dof or len(d_xyz.shape) > 2:     # d_xyz: (Np, 4, 4)
             means3D = from_homogenous(
                 torch.bmm(d_xyz, to_homogenous(pc.get_xyz).unsqueeze(-1)).squeeze(-1))
-    else:
-        means3D = pc.get_xyz + d_xyz
+        else:                                   # d_xyz: (Np, 3)
+            means3D = pc.get_xyz + d_xyz
     opacity = pc.get_opacity
+
+    # set scores to the correct size if not passed in
+    if scores is None:
+        scores = torch.zeros_like(opacity)
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -104,6 +108,9 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
     else:
         colors_precomp = override_color
 
+    if group_colors is not None:
+        shs = group_colors
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     rendered_image, radii, depth = rasterizer(
         means3D=means3D,
@@ -112,6 +119,7 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
         shs=shs,
         colors_precomp=colors_precomp,
         opacities=opacity,
+        scores = scores,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp)
