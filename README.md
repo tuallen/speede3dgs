@@ -1,10 +1,10 @@
 # Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes
 
-## [Project page](https://speede3dgs.github.io/) | Paper (Coming Soon)
+## [Project page](https://speede3dgs.github.io/) | [Paper](https://arxiv.org/abs/2506.07917)
 
 [Allen Tu*](https://tuallen.github.io/), [Haiyang Ying*](https://oceanying.github.io), [Alex Hanson](https://www.cs.umd.edu/~hanson/), [Yonghan Lee](https://sites.google.com/view/yonghan-lee/home), [Tom Goldstein](https://www.cs.umd.edu/~tomg/), [Matthias Zwicker](https://www.cs.umd.edu/~zwicker/)
 
-*\* indicates equal contribution*
+*\* denotes equal contribution*
 
 
 <img src="assets/teaser.png" alt="Teaser Figure" />
