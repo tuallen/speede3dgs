@@ -102,10 +102,10 @@ We provide several modes for rendering:
 
 ```
 @article{TuYing2025speede3dgs,
-    author    = {Tu, Allen and Ying, Haiyang and Hanson, Alex and Lee, Yonghan and Goldstein, Tom and Zwicker, Matthias}
-    title     = {Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes}
-    journal   = {arXiv preprint arXiv:2506.07917}
-    year      = {2025}
+    author    = {Tu, Allen and Ying, Haiyang and Hanson, Alex and Lee, Yonghan and Goldstein, Tom and Zwicker, Matthias},
+    title     = {Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes},
+    journal   = {arXiv preprint arXiv:2506.07917},
+    year      = {2025},
     url       = {https://speede3dgs.github.io/}
 }
 ```
