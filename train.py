@@ -33,7 +33,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 def score_func(scores, view, gaussians, opt, pipe, background, deform, time_interval, 
-               gflow_model=None, is_6dof=False, use_apt_noise=True, smooth_term=0):
+               gflow_model=None, is_6dof=False, smooth_term=0):
 
     img_scores = torch.zeros_like(scores)
     img_scores.requires_grad = True
@@ -45,39 +45,45 @@ def score_func(scores, view, gaussians, opt, pipe, background, deform, time_inte
         else:
             N = gaussians.get_xyz.shape[0]
             time_input = fid.unsqueeze(0).expand(N, -1)
-            apt_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term if use_apt_noise else 0
-            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + apt_noise)
+            asp_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term if opt.use_asp else 0
+            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + asp_noise)
 
-    image = render(view, gaussians, pipe, background, d_xyz, d_rotation, d_scaling, is_6dof, scores=img_scores)['render']
+    render_pkg_re = render(view, gaussians, pipe, background, 
+                           d_xyz, d_rotation, d_scaling, is_6dof, 
+                           scores=img_scores)
+    image = render_pkg_re['render']
+    vis = render_pkg_re['visibility_filter']
 
     # Backward computes and stores grad squared values
     # in img_scores's grad
     image.sum().backward()
-
     scores += img_scores.grad
+
+    return vis
 
 
 def prune(scene, gaussians, dataset, opt, pipe, background, deform, time_interval, prune_ratio, 
           gflow_model=None, smooth_term=0, iteration=0):
-    use_apt_noise = not dataset.is_blender and opt.use_apt_noise
     with torch.enable_grad():
         pbar = tqdm(
             total=len(scene.getTrainCameras()),
             desc='Computing Pruning Scores')
         scores = torch.zeros_like(gaussians.get_opacity)
-        scores_prev = torch.zeros_like(scores)
         view_counts = torch.zeros_like(scores, dtype=torch.int32)
         for view in scene.getTrainCameras():
-            score_func(scores, view, gaussians, opt, pipe, background, 
-                       deform, time_interval, gflow_model=gflow_model, is_6dof=dataset.is_6dof, 
-                       use_apt_noise=use_apt_noise, smooth_term=smooth_term)
-            view_mask = (scores > scores_prev).squeeze()
-            view_counts[view_mask] += 1
-            scores_prev = scores.clone()
+            vis = score_func(scores, view, gaussians, opt, pipe, background, 
+                       deform, time_interval, gflow_model=gflow_model, is_6dof=dataset.is_6dof, smooth_term=smooth_term)
+            with torch.no_grad():
+                view_counts[vis] += 1               
             pbar.update(1)
         pbar.close()
 
-    prune_mask = gaussians.prune_gaussians(prune_ratio, scores * view_counts ** opt.vc_exp)
+    if opt.use_vc:
+        norm = torch.sqrt(view_counts.float() + 1e-6)
+        scores = scores / norm
+        scores[view_counts == 0] = -float("inf")
+    
+    prune_mask = gaussians.prune_gaussians(prune_ratio, scores)
     if gflow_model is not None:
         gflow_model.labels = gflow_model.labels[~prune_mask]
 

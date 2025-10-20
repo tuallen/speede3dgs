@@ -78,7 +78,7 @@ python train.py \
     --iterations 30000 \ 
     --test_iterations 40000 \ 
     --save_iterations 30000 \ 
-    --use_apt_noise \ 
+    --use_asp \ 
     --gflow_flag 
 ```
 

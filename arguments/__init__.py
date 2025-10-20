@@ -102,10 +102,10 @@ class OptimizationParams(ParamGroup):
         self.prune_from_iter = 6000
         self.prune_until_iter = 30_000
         self.prune_interval = 3000
-        self.densify_prune_ratio = 0.80
+        self.densify_prune_ratio = 0.60
         self.after_densify_prune_ratio = 0.30
-        self.use_apt_noise = False
-        self.vc_exp = 0.0
+        self.use_asp = False
+        self.use_vc = False
 
         # gflow parameters
         self.gflow_xyz_lr = 1e-5
