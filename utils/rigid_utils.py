@@ -212,7 +212,7 @@ def grouping_stage_one(gaussians, scene, dataset, deform, gnum=50, early_group_f
         means3D_0 = all_gs_xyz + d_xyz
     
     ### Initialize groups via Furthest pts sampling
-    node_num = gnum
+    node_num = min(gnum, means3D_0.shape[0])    # in case gnum > pointnum (means3D_0.shape[0])
     init_nodes_idx = farthest_point_sample(means3D_0.detach()[None], node_num)[0]
 
     ### Sample trajectory for all gaussians
@@ -254,7 +254,7 @@ def grouping_stage_one(gaussians, scene, dataset, deform, gnum=50, early_group_f
     label_assignment_all = torch.argsort(rigidity, dim=1)    # (Np, Ng)
     labels_uni = torch.unique(label_assignment)
 
-    cmap = np.random.randint(0, 256, [1000, 3])
+    cmap = np.random.randint(0, 256, [labels_uni.shape[0], 3])
     cmap[-1, :] = 0
 
     rgb = cmap[label_assignment.detach().cpu().numpy(), :]
@@ -485,6 +485,13 @@ class GroupFlowModel_v2():
         self.spatial_lr_scale = 0.00001
         self.version = 2
 
+        ### Compile slow functions
+
+        self.rotation_matrix_to_quaternion_fast = rotation_matrix_to_quaternion_fast
+        self.quaternion_multiply_fast = quaternion_multiply_fast
+        self.exp_so3_batch = exp_so3_batch
+        self.log_so3_batch = log_so3_batch
+
     def set_model(self, gflow_dict, training_args, scene_scale=1.0):
 
         self.time_stamps = gflow_dict["time_stamps"]  # float: (T)
@@ -505,6 +512,7 @@ class GroupFlowModel_v2():
         self.gflow_local_rot = training_args.gflow_local_rot
         self.LBS_flag = training_args.LBS_flag
         self.annealing_lr_flag = training_args.gflow_annealing_lr_flag
+        self.gflow_local_rot_for_train = training_args.gflow_local_rot_for_train
 
         # if self.LBS_flag:
         self.scene_scale = scene_scale
@@ -553,7 +561,7 @@ class GroupFlowModel_v2():
     def save_weights(self, model_path, iteration):
         out_weights_path = os.path.join(model_path, "gflow/iteration_{}".format(iteration))
         os.makedirs(out_weights_path, exist_ok=True)
-        flags = [self.LBS_flag, self.gflow_local_rot, self.annealing_lr_flag]
+        flags = [self.LBS_flag, self.gflow_local_rot, self.gflow_local_rot_for_train, self.annealing_lr_flag]
         torch.save([self.gf_nodes_xyz, self.gf_rotation, self.gf_translation, self.gf_nodes_radius, self.time_stamps, self.labels, flags], os.path.join(out_weights_path, 'deform.pth'))
 
     def load_weights(self, model_path, iteration=-1):
@@ -575,7 +583,7 @@ class GroupFlowModel_v2():
         self.group_num = self.gf_translation.shape[0]
         self.frame_num = self.gf_translation.shape[1] + 1
 
-        self.LBS_flag, self.gflow_local_rot, self.annealing_lr_flag = flags
+        self.LBS_flag, self.gflow_local_rot, self.gflow_local_rot_for_train, self.annealing_lr_flag = flags
 
     def precompute_interp(self, x=None):
         delta_w_list = []
@@ -605,6 +613,17 @@ class GroupFlowModel_v2():
             sigma = self.gf_nodes_radius[self.labels_all]               # (Np, K)
             weights = torch.exp( -dist / (2*sigma) )                    # (Np, K)
             self.weights = weights / weights.sum(dim=1, keepdim=True)        # (Np, K)
+        
+        ### Pre-compile functions for faster inference
+        self.rotation_matrix_to_quaternion_fast = torch.compile(rotation_matrix_to_quaternion_fast, mode="reduce-overhead", fullgraph=True, dynamic=False)
+        self.quaternion_multiply_fast = torch.compile(quaternion_multiply_fast, mode="reduce-overhead", fullgraph=True, dynamic=False)
+        self.exp_so3_batch = torch.compile(exp_so3_batch, mode="reduce-overhead", fullgraph=True, dynamic=False)
+        self.log_so3_batch = torch.compile(log_so3_batch, mode="reduce-overhead", fullgraph=True, dynamic=False)
+
+        ### Warm-up: The first call will be slow, 
+        # but in `render.py` if you render_with_save and then render_test_speed, render_with_save will be a warm-up step natually
+        # R = torch.randn([1000, 3, 3])
+        # self.rotation_matrix_to_quaternion_fast(R)
     
     def step_t_func(self, t, use_precomputed_interp=False):
         """
@@ -636,12 +655,12 @@ class GroupFlowModel_v2():
                 delta_w = self.delta_w_list[:, vid_floor, :]
                 R_floor = self.R_floor_list[:, vid_floor, :, :]
             else:
-                R_floor = exp_so3_batch(lie_floor[:, :3])   # (Ng, 3, 3)
-                R_ceil = exp_so3_batch(lie_ceil[:, :3])     # (Ng, 3, 3)
+                R_floor = self.exp_so3_batch(lie_floor[:, :3]).clone()   # (Ng, 3, 3)
+                R_ceil = self.exp_so3_batch(lie_ceil[:, :3])     # (Ng, 3, 3)
                 delta_R = R_floor.transpose(1,2) @ R_ceil       # (Ng, 3, 3)
-                delta_w = log_so3_batch(delta_R)                # (Ng, 3)
+                delta_w = self.log_so3_batch(delta_R)                # (Ng, 3)
 
-            inference_R = exp_so3_batch(ratio * delta_w)    # (Ng, 3, 3)
+            inference_R = self.exp_so3_batch(ratio * delta_w)    # (Ng, 3, 3)
             R = R_floor @ inference_R   # (Ng, 3, 3)
 
             T = trans_floor * (1 - ratio) + trans_ceil * (ratio) # (Ng, 3)
@@ -690,9 +709,17 @@ class GroupFlowModel_v2():
 
             ### Optional: Rotate per-gaussian orientation
             if (self.gflow_local_rot is True) and (Q is not None):
-                dQ_groups = rotation_matrix_to_quaternion(gtransform[:, :, :3]) # (Ng, 3, 3) -> (Ng, 4)
+                ### 1. Get quaternion dQ from rotation matrix (Use compiled func to get faster speed)
+                # dQ_groups = rotation_matrix_to_quaternion(gtransform[:, :, :3]) # (Ng, 3, 3) -> (Ng, 4)
+                # dQ_groups = rotation_matrix_to_quaternion_fast(gtransform[:, :, :3]) # (Ng, 3, 3) -> (Ng, 4)
+                dQ_groups = self.rotation_matrix_to_quaternion_fast(gtransform[:, :, :3]) # (Ng, 3, 3) -> (Ng, 4)
+                ### 2. Map dQ to all gaussian points
                 dQ = dQ_groups[self.labels, :]
-                new_rotation = quaternion_multiply(dQ, Q)
+                ### 3. Get rotation/pose after rotation (Use compiled func to get faster speed)
+                # new_rotation = quaternion_multiply(dQ, Q)
+                # new_rotation = quaternion_multiply_fast(dQ, Q)
+                new_rotation = self.quaternion_multiply_fast(dQ, Q)
+                ### 4. Normalize to get difference/d_rotation as input of De3DGS's gaussian_render/__init__.py
                 d_rotation = torch.nn.functional.normalize(new_rotation) - Q
 
                 if torch.isnan(d_rotation).any().item() or torch.isinf(d_rotation).any().item():
@@ -983,6 +1010,80 @@ def rotation_matrix_to_quaternion(R: torch.Tensor, eps: float = 1e-6) -> torch.T
     return q
 
 
+def rotation_matrix_to_quaternion_fast(R: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """
+    Vectorized, branchless conversion of (...,3,3) rotation matrices to quaternions (...,4) in [w,x,y,z].
+    Avoids boolean-advanced indexing; enables kernel fusion and is friendlier to torch.compile/TorchScript.
+    """
+    assert R.shape[-2:] == (3,3)
+    orig_shape = R.shape[:-2]
+    R = R.reshape(-1, 3, 3).contiguous()  # [B,3,3]
+    B = R.shape[0]
+
+    m00 = R[:,0,0]; m01 = R[:,0,1]; m02 = R[:,0,2]
+    m10 = R[:,1,0]; m11 = R[:,1,1]; m12 = R[:,1,2]
+    m20 = R[:,2,0]; m21 = R[:,2,1]; m22 = R[:,2,2]
+
+    trace = m00 + m11 + m22
+
+    # Candidates:
+    # t0 -> m00 largest; t1 -> m11 largest; t2 -> m22 largest; t3 -> trace largest
+    t0 = 1.0 + m00 - m11 - m22
+    t1 = 1.0 - m00 + m11 - m22
+    t2 = 1.0 - m00 - m11 + m22
+    t3 = 1.0 + trace
+
+    # We use s = 2 * sqrt(t) as in the standard formulas
+    def _s(x): 
+        return 2.0 * torch.sqrt(torch.clamp(x, min=0.0)) + eps
+
+    s0 = _s(t0)
+    s1 = _s(t1)
+    s2 = _s(t2)
+    s3 = _s(t3)
+
+    # Case 0 (m00 largest)
+    q0w = (m21 - m12) / s0
+    q0x = 0.25 * s0
+    q0y = (m01 + m10) / s0
+    q0z = (m02 + m20) / s0
+
+    # Case 1 (m11 largest)
+    q1w = (m02 - m20) / s1
+    q1x = (m01 + m10) / s1
+    q1y = 0.25 * s1
+    q1z = (m12 + m21) / s1
+
+    # Case 2 (m22 largest)
+    q2w = (m10 - m01) / s2
+    q2x = (m02 + m20) / s2
+    q2y = (m12 + m21) / s2
+    q2z = 0.25 * s2
+
+    # Case 3 (trace largest)
+    q3w = 0.25 * s3
+    q3x = (m21 - m12) / s3
+    q3y = (m02 - m20) / s3
+    q3z = (m10 - m01) / s3
+
+    # Stack candidates: [B, 4(cases), 4(comps)]
+    Qc = torch.stack([
+        torch.stack([q0w, q0x, q0y, q0z], dim=-1),
+        torch.stack([q1w, q1x, q1y, q1z], dim=-1),
+        torch.stack([q2w, q2x, q2y, q2z], dim=-1),
+        torch.stack([q3w, q3x, q3y, q3z], dim=-1),
+    ], dim=1)
+
+    # Pick the best case per row with argmax over t0..t3
+    idx = torch.argmax(torch.stack([t0, t1, t2, t3], dim=-1), dim=-1)  # [B]
+    q = Qc[torch.arange(B, device=R.device), idx, :]  # [B,4]
+
+    # Normalize (guards residual drift)
+    q = q / q.norm(dim=-1, keepdim=True).clamp(min=eps)
+
+    return q.reshape(orig_shape + (4,))
+
+
 def quaternion_multiply(q1, q2):
     """
     Multiply two quaternions.
@@ -996,6 +1097,18 @@ def quaternion_multiply(q1, q2):
         w1*y2 - x1*z2 + y1*w2 + z1*x2,
         w1*z2 + x1*y2 - y1*x2 + z1*w2,
     ], dim=-1)
+
+
+def quaternion_multiply_fast(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    # q = [w, x, y, z]
+    w1 = q1[..., :1]
+    v1 = q1[..., 1:]
+    w2 = q2[..., :1]
+    v2 = q2[..., 1:]
+
+    w = w1 * w2 - (v1 * v2).sum(dim=-1, keepdim=True)
+    v = w1 * v2 + w2 * v1 + torch.cross(v1, v2, dim=-1)
+    return torch.cat([w, v], dim=-1)
 
 
 def do_group_flow(gaussians, opt, dataset, scene, deform):
@@ -1083,6 +1196,8 @@ def step_group_flow(gflow_model, opt, fid, gaussians, use_precomputed_interp=Fal
             if torch.is_tensor(d_xyz):
                 if fix_gflow_flag:
                     d_xyz = d_xyz.detach()
-                d_rotation = d_rotation.detach()
+                    d_rotation = d_rotation.detach()
+                elif gflow_model.gflow_local_rot_for_train == False:   # if use gflow_local_rot as another gradient branch for training, if True, it would be slower. Default: False
+                    d_rotation = d_rotation.detach()
     
     return d_xyz, d_rotation, d_scaling

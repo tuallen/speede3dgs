@@ -121,6 +121,7 @@ class OptimizationParams(ParamGroup):
         self.gflow_annealing_lr_flag = False
         self.gflow_noise_flag = True
         self.gflow_tnum_max = 200
+        self.gflow_local_rot_for_train = False  # if use gflow_local_rot as another gradient branch for training
 
         super().__init__(parser, "Optimization Parameters")
 
