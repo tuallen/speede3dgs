@@ -26,6 +26,15 @@ output_path="output/${dataset}/${scene}"
 # output_path="output/${dataset}/${scene}_default"
 # # output_path="output/${dataset}/${scene}_local_rot"
 
+
+### GroupFlow Parameters:
+# --gflow_flag:       if use groupflow
+# --gflow_num:        group number
+# --gflow_local_rot:  if apply local rotation to per-gaussian
+# --gflow_iteration:  gflow start iterations
+# --gflow_local_rot_for_train: if use local rotation as a branch for gflow rotation training (TO BE Debugged)
+
+
 if [ "$dataset" = "D-NeRF" ]; then
   echo ">>> Dataset: $dataset | Scene: $scene"
   python train.py \
@@ -37,10 +46,9 @@ if [ "$dataset" = "D-NeRF" ]; then
     --test_iterations 40000 \
     --save_iterations 30000 \
     --gflow_flag \
-    --gflow_num 1100 \
+    --gflow_num 1024 \
     --gflow_local_rot
     # --gflow_iteration 3001 \
-    # --densify_until_iter 1000
     # --gflow_local_rot_for_train
 else
   echo ">>> Dataset: $dataset | Scene: $scene"
@@ -53,10 +61,9 @@ else
     --save_iterations 30000 \
     --use_asp \
     --gflow_flag \
-    --gflow_num 1100 \
+    --gflow_num 1024 \
     --gflow_local_rot
     # --gflow_iteration 3001 \
-    # --densify_until_iter 1000
     # --gflow_local_rot_for_train
 fi
 
