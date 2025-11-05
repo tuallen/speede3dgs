@@ -104,7 +104,7 @@ class OptimizationParams(ParamGroup):
         self.prune_interval = 3000
         self.densify_prune_ratio = 0.60
         self.after_densify_prune_ratio = 0.30
-        self.use_asp = False
+        self.use_tss = False
         self.use_vc = False
 
         # gflow parameters
@@ -114,7 +114,7 @@ class OptimizationParams(ParamGroup):
         self.gflow_radius_lr = 1e-7
         self.gflow_flag = False     ## If use grouping
         self.gflow_iteration = 15000
-        self.gflow_num = 500     # groupflow number
+        self.gflow_num = 2048     # groupflow number
         self.gflow_opt = 2      # groupflow options ["1", "2"]
         self.gflow_local_rot = False
         self.LBS_flag = False

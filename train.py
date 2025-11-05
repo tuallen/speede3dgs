@@ -45,8 +45,8 @@ def score_func(scores, view, gaussians, opt, pipe, background, deform, time_inte
         else:
             N = gaussians.get_xyz.shape[0]
             time_input = fid.unsqueeze(0).expand(N, -1)
-            asp_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term if opt.use_asp else 0
-            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + asp_noise)
+            tss_noise = torch.randn(1, 1, device='cuda').expand(N, -1) * time_interval * smooth_term if opt.use_tss else 0
+            d_xyz, d_rotation, d_scaling = deform.step(gaussians.get_xyz.detach(), time_input + tss_noise)
 
     render_pkg_re = render(view, gaussians, pipe, background, 
                            d_xyz, d_rotation, d_scaling, is_6dof, 

@@ -10,3 +10,6 @@ screenshots
 slurm*
 *.code-workspace
 **/.DS_Store
+**/.ipynb_checkpoints/
+experiments/
+env/

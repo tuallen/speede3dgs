@@ -42,11 +42,11 @@ We organize the datasets as follows:
 git clone https://github.com/tuallen/speede3dgs.git --recursive
 cd speede3dgs
 
-conda create -n speede3dgs python=3.7
+conda create -n speede3dgs python=3.11
 conda activate speede3dgs
 
 # install pytorch
-pip install torch==1.13.1+cu116 torchvision==0.14.1+cu116 --extra-index-url https://download.pytorch.org/whl/cu116
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
 
 # install dependencies
 pip install -r requirements.txt
@@ -54,22 +54,6 @@ pip install -r requirements.txt
 
 ## Train
 
-**D-NeRF:**
-
-```shell
-python train.py \ 
-    -s path/to/your/dataset/scene \ 
-    -m output/exp-name \ 
-    --eval \ 
-    --is_blender \ 
-    --iterations 30000 \ 
-    --test_iterations 40000 \ 
-    --save_iterations 30000 \ 
-    --gflow_flag 
-```
-
-**NeRF-DS/HyperNeRF:**
-
 ```shell
 python train.py \ 
     -s path/to/your/dataset/scene \ 
@@ -78,15 +62,16 @@ python train.py \
     --iterations 30000 \ 
     --test_iterations 40000 \ 
     --save_iterations 30000 \ 
-    --use_asp \ 
-    --gflow_flag 
+    --use_tss \ # Temporal Sensitivity Sampling
+    --gflow_flag # GroupFlow (Optional)
 ```
 
 
 ### Render & Evaluation
 
 ```shell
-python render.py -m output/exp-name --mode render --gflow_flag
+python render.py -m output/exp-name --mode render \
+    --gflow_flag # GroupFlow (Optional)
 python metrics.py -m output/exp-name
 ```
 

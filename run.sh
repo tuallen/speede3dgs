@@ -23,30 +23,16 @@ scene=hook
 source_path="data/${dataset}/${scene}"
 output_path="output/${dataset}/${scene}"
 
-if [ "$dataset" = "D-NeRF" ]; then
-  echo ">>> Dataset: $dataset | Scene: $scene"
-  python train.py \
-    -s "$source_path" \
-    -m "$output_path" \
-    --eval \
-    --is_blender \
-    --iterations 30000 \
-    --test_iterations 40000 \
-    --save_iterations 30000 \
-    --gflow_flag
-else
-  echo ">>> Dataset: $dataset | Scene: $scene"
-  python train.py \
-    -s "$source_path" \
-    -m "$output_path" \
-    --eval \
-    --iterations 30000 \
-    --test_iterations 40000 \
-    --save_iterations 30000 \
-    --use_asp \
-    --gflow_flag
-fi
-
+echo ">>> Dataset: $dataset | Scene: $scene"
+python train.py \
+-s "$source_path" \
+-m "$output_path" \
+--eval \
+--iterations 30000 \
+--test_iterations 40000 \
+--save_iterations 30000 \
+--use_tss \ # Temporal Sensitivity Sampling
+--gflow_flag # GroupFlow (Optional)
 
 python render.py -m "$output_path" --mode render --gflow_flag --skip_train
 python metrics.py -m "$output_path"
