@@ -9,7 +9,7 @@
 
 <img src="assets/teaser.png" alt="Teaser Figure" />
 
-This repository contains the official implementation associated with the paper "Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes". It is built on top of the [Deformable 3D Gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians) codebase, and the pruning strategy is based on [Speedy-Splat](https://github.com/j-alex-hanson/speedy-splat). If you make use of this code in your research, please consider citing these works in addition to ours.
+This repository contains the official implementation associated with the paper "SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting\\with Temporal Pruning and Motion Grouping." It is built on top of the [Deformable 3D Gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians) codebase, and the pruning strategy is based on [Speedy-Splat](https://github.com/j-alex-hanson/speedy-splat). If you make use of this code in your research, please consider citing these works in addition to ours.
 
 ## Dataset
 
