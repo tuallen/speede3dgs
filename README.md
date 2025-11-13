@@ -1,4 +1,4 @@
-# Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes
+# SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting with Temporal Pruning and Motion Grouping
 
 ## [Project page](https://speede3dgs.github.io/) | [Paper](https://arxiv.org/abs/2506.07917)
 
@@ -9,7 +9,7 @@
 
 <img src="assets/teaser.png" alt="Teaser Figure" />
 
-This repository contains the official implementation associated with the paper "SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting\\with Temporal Pruning and Motion Grouping." It is built on top of the [Deformable 3D Gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians) codebase, and the pruning strategy is based on [Speedy-Splat](https://github.com/j-alex-hanson/speedy-splat). If you make use of this code in your research, please consider citing these works in addition to ours.
+This repository contains the official implementation associated with the paper "SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting with Temporal Pruning and Motion Grouping." It is built on top of the [Deformable 3D Gaussians](https://github.com/ingra14m/Deformable-3D-Gaussians) codebase, and the pruning strategy is based on [Speedy-Splat](https://github.com/j-alex-hanson/speedy-splat). If you make use of this code in your research, please consider citing these works in addition to ours.
 
 ## Dataset
 
@@ -88,7 +88,7 @@ We provide several modes for rendering:
 ```
 @article{TuYing2025speede3dgs,
     author    = {Tu, Allen and Ying, Haiyang and Hanson, Alex and Lee, Yonghan and Goldstein, Tom and Zwicker, Matthias},
-    title     = {Speedy Deformable 3D Gaussian Splatting: Fast Rendering and Compression of Dynamic Scenes},
+    title     = {SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting with Temporal Pruning and Motion Grouping},
     journal   = {arXiv preprint arXiv:2506.07917},
     year      = {2025},
     url       = {https://speede3dgs.github.io/}
