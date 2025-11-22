@@ -86,7 +86,7 @@ We provide several modes for rendering:
 # BibTex
 
 ```
-@article{TuYing2025speede3dgs,
+@article{TuYing2025SpeeDe3DGS,
     author    = {Tu, Allen and Ying, Haiyang and Hanson, Alex and Lee, Yonghan and Goldstein, Tom and Zwicker, Matthias},
     title     = {SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting with Temporal Pruning and Motion Grouping},
     journal   = {arXiv preprint arXiv:2506.07917},
@@ -94,6 +94,34 @@ We provide several modes for rendering:
     url       = {https://speede3dgs.github.io/}
 }
 ```
+
+<h2 class="title">Related Work</h2>
+<p>For additional papers on efficient 3D Gaussian Splatting, see our group’s related work below. If your
+    research builds on ours, we encourage you to cite these papers.</p>
+<ol>
+    <li>
+        <a href="https://speedysplat.github.io/" target="_blank" rel="noopener">
+            <strong>Speedy-Splat</strong>
+        </a>
+        <em>(CVPR 2025)</em>
+        <small><a href="https://speedysplat.github.io/#BibTeX" target="_blank">[BibTeX]</a></small>
+        — Accelerate 3D Gaussian Splatting rendering speed by over 6× and reduce model size by over 90%
+        through accurately localizing primitives during rasterization and pruning the scene during
+        training, providing a significantly higher speedup than existing techniques while maintaining
+        competitive image quality.
+    </li>
+    <li>
+        <a href="https://pup3dgs.github.io/" target="_blank" rel="noopener">
+            <strong>PUP-3DGS</strong>
+        </a>
+        <em>(CVPR 2025)</em>
+        <small><a href="https://pup3dgs.github.io/#BibTeX" target="_blank">[BibTeX]</a></small>
+        — Prune 90% of primitives from any pretrained 3D Gaussian Splatting model using a mathematically
+        principled sensitivity score, more than tripling rendering speed while retaining more salient
+        foreground information and higher visual fidelity than previous techniques at a substantially
+        higher compression ratio.
+    </li>
+</ol>
 
 # Funding and Acknowledgements
 
