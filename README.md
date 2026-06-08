@@ -86,11 +86,13 @@ We provide several modes for rendering:
 # BibTex
 
 ```
-@article{TuYing2025SpeeDe3DGS,
+@InProceedings{TuYing2025SpeeDe3DGS,
     author    = {Tu, Allen and Ying, Haiyang and Hanson, Alex and Lee, Yonghan and Goldstein, Tom and Zwicker, Matthias},
     title     = {SpeeDe3DGS: Speedy Deformable 3D Gaussian Splatting with Temporal Pruning and Motion Grouping},
-    journal   = {arXiv preprint arXiv:2506.07917},
-    year      = {2025},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+    month     = {June},
+    year      = {2026},
+    pages     = {26083-26093},
     url       = {https://speede3dgs.github.io/}
 }
 ```
